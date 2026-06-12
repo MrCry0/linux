@@ -232,15 +232,22 @@ const void *cmd_db_read_aux_data(const char *id, size_t *len)
 	int ret;
 	const struct entry_header *ent;
 	const struct rsc_hdr *rsc_hdr;
+	const void *data;
+	u16 ent_len;
 
 	ret = cmd_db_get_header(id, &ent, &rsc_hdr);
 	if (ret)
 		return ERR_PTR(ret);
 
-	if (len)
-		*len = le16_to_cpu(ent->len);
+	ent_len = le16_to_cpu(ent->len);
+	data = rsc_offset(rsc_hdr, ent);
+	if (!cmd_db_in_bounds(data, ent_len))
+		return ERR_PTR(-EINVAL);
 
-	return rsc_offset(rsc_hdr, ent);
+	if (len)
+		*len = ent_len;
+
+	return data;
 }
 EXPORT_SYMBOL_GPL(cmd_db_read_aux_data);
 
@@ -296,6 +303,7 @@ static int cmd_db_debugfs_dump(struct seq_file *seq, void *p)
 	int i, j;
 	const struct rsc_hdr *rsc;
 	const struct entry_header *ent;
+	const void *data;
 	const char *name;
 	u16 cnt, len, version;
 	u8 major, minor;
@@ -339,10 +347,9 @@ static int cmd_db_debugfs_dump(struct seq_file *seq, void *p)
 				   (int)strnlen(ent->id, sizeof(ent->id)), ent->id);
 
 			len = le16_to_cpu(ent->len);
-			if (len) {
-				seq_printf(seq, " [%*ph]",
-					   len, rsc_offset(rsc, ent));
-			}
+			data = rsc_offset(rsc, ent);
+			if (len && cmd_db_in_bounds(data, len))
+				seq_printf(seq, " [%*ph]", len, data);
 			seq_putc(seq, '\n');
 		}
 	}
