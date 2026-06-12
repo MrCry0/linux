@@ -108,6 +108,24 @@ static bool cmd_db_magic_matches(const struct cmd_db_header *header)
 }
 
 static struct cmd_db_header *cmd_db_header;
+static size_t cmd_db_size;
+
+/*
+ * Check that a [addr, addr + len) range lies entirely within the mapped
+ * command DB region. The slave and entry headers carry offsets and counts
+ * supplied by firmware, so a walk derived from them has to be validated
+ * before it is dereferenced.
+ */
+static bool cmd_db_in_bounds(const void *addr, size_t len)
+{
+	const void *start = cmd_db_header;
+	const void *end = start + cmd_db_size;
+
+	if (addr < start || addr > end)
+		return false;
+
+	return len <= (size_t)(end - addr);
+}
 
 static inline const void *rsc_to_entry_header(const struct rsc_hdr *hdr)
 {
@@ -147,6 +165,7 @@ static int cmd_db_get_header(const char *id, const struct entry_header **eh,
 	const struct rsc_hdr *rsc_hdr;
 	const struct entry_header *ent;
 	int ret, i, j;
+	u16 cnt;
 	u8 query[sizeof(ent->id)] __nonstring;
 
 	ret = cmd_db_ready();
@@ -161,7 +180,11 @@ static int cmd_db_get_header(const char *id, const struct entry_header **eh,
 			break;
 
 		ent = rsc_to_entry_header(rsc_hdr);
-		for (j = 0; j < le16_to_cpu(rsc_hdr->cnt); j++, ent++) {
+		cnt = le16_to_cpu(rsc_hdr->cnt);
+		if (!cmd_db_in_bounds(ent, (size_t)cnt * sizeof(*ent)))
+			continue;
+
+		for (j = 0; j < cnt; j++, ent++) {
 			if (memcmp(ent->id, query, sizeof(ent->id)) == 0) {
 				if (eh)
 					*eh = ent;
@@ -274,7 +297,7 @@ static int cmd_db_debugfs_dump(struct seq_file *seq, void *p)
 	const struct rsc_hdr *rsc;
 	const struct entry_header *ent;
 	const char *name;
-	u16 len, version;
+	u16 cnt, len, version;
 	u8 major, minor;
 
 	seq_puts(seq, "Command DB DUMP\n");
@@ -307,7 +330,11 @@ static int cmd_db_debugfs_dump(struct seq_file *seq, void *p)
 		seq_puts(seq, "-------------------------\n");
 
 		ent = rsc_to_entry_header(rsc);
-		for (j = 0; j < le16_to_cpu(rsc->cnt); j++, ent++) {
+		cnt = le16_to_cpu(rsc->cnt);
+		if (!cmd_db_in_bounds(ent, (size_t)cnt * sizeof(*ent)))
+			continue;
+
+		for (j = 0; j < cnt; j++, ent++) {
 			seq_printf(seq, "0x%05x: %*pEp", le32_to_cpu(ent->addr),
 				   (int)strnlen(ent->id, sizeof(ent->id)), ent->id);
 
@@ -361,6 +388,8 @@ static int cmd_db_dev_probe(struct platform_device *pdev)
 		cmd_db_header = NULL;
 		return -EINVAL;
 	}
+
+	cmd_db_size = rmem->size;
 
 	debugfs_create_file("cmd-db", 0400, NULL, NULL, &cmd_db_debugfs_ops);
 
